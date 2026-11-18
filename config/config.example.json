@@ -1,0 +1,89 @@
+{
+  "//": "BackupKit configuration. Copy to /etc/backupkit/config.json (chmod 600).",
+  "//secrets": "Everything secret lives in secrets.json, never here.",
+  "//docs": "https://github.com/rosyidrid/backup-kit/blob/main/docs/configuration.md",
+
+  "timezone": "Asia/Jakarta",
+
+  "storage": {
+    "provider": "cloudflare-r2",
+    "bucket": "example-backups",
+    "endpoint": "https://ACCOUNT_ID.r2.cloudflarestorage.com",
+    "region": "auto",
+    "prefix": "vps-backups",
+    "timeout_seconds": 300,
+    "retry": {
+      "max_attempts": 3,
+      "delay_seconds": 5
+    },
+
+    "//local_or_generic_s3": [
+      "Generic S3-compatible storage (MinIO, Wasabi, Backblaze B2 S3, AWS):",
+      "  provider: s3, endpoint: https://s3.example.com, region: us-east-1, bucket: my-bucket",
+      "Offline or test storage on a local directory:",
+      "  provider: local, local: { path: /var/lib/backupkit-store }"
+    ]
+  },
+
+  "encryption": {
+    "enabled": true,
+    "//recipient": "Your age public key. Generate with: age-keygen -o /etc/backupkit/age.key",
+    "recipient": "age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+    "identity_file": "/etc/backupkit/age.key"
+  },
+
+  "compression": {
+    "algorithm": "zstd",
+    "level": 10
+  },
+
+  "retention": {
+    "//": "Defaults applied to any database that does not override them.",
+    "daily": 7,
+    "weekly": 4,
+    "monthly": 12,
+    "//min_age_hours": "Never delete anything younger than this, regardless of policy.",
+    "min_age_hours": 0
+  },
+
+  "schedule": {
+    "//": "Installed by 'backupkit install-scheduler'. 0=Sunday.",
+    "weekly_dow": 0,
+    "monthly_dom": 1
+  },
+
+  "notifications": {
+    "telegram": {
+      "enabled": false,
+      "timeout_seconds": 10
+    }
+  },
+
+  "databases": [
+    {
+      "id": "app-mysql",
+      "type": "mysql",
+      "database": "appdb",
+      "host": "127.0.0.1",
+      "port": 3306,
+      "user": "backup",
+      "enabled": true,
+      "schedule": { "daily": true, "weekly": true, "monthly": true },
+      "retention": { "daily": 7, "weekly": 4, "monthly": 12 },
+      "//": "InnoDB settings are defaults; MyISAM needs \"lock_tables\": true."
+    },
+    {
+      "id": "app-postgres",
+      "type": "postgres",
+      "database": "appdb",
+      "host": "127.0.0.1",
+      "port": 5432,
+      "user": "backup",
+      "enabled": true,
+      "schedule": { "daily": true, "weekly": true, "monthly": false },
+      "retention": { "daily": 7, "weekly": 4, "monthly": 12 },
+      "//globals": "true also dumps cluster roles with pg_dumpall --globals-only.",
+      "globals": true
+    }
+  ]
+}

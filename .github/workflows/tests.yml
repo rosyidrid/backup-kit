@@ -1,0 +1,72 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: bash ${{ matrix.bash }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            bash: system
+          - os: macos-latest
+            bash: system
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show environment
+        run: |
+          bash --version | head -1
+          uname -a
+          git --version
+
+      - name: Install dependencies
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq jq zstd gzip curl
+          else
+            brew list jq >/dev/null 2>&1 || brew install jq
+            brew list zstd >/dev/null 2>&1 || brew install zstd
+          fi
+
+      - name: Syntax check every shell file
+        run: |
+          fail=0
+          while IFS= read -r f; do
+            bash -n "$f" || { echo "syntax error: $f"; fail=1; }
+          done < <(find bin src scripts tests -type f \( -name '*.sh' -o -perm -u+x \) | sort)
+          exit "$fail"
+
+      - name: Run the test suite
+        run: bash tests/run.sh
+
+      - name: Check that no secret-ish file is tracked
+        run: |
+          if git ls-files | grep -E '(^|/)(config\.json|secrets\.json|age\.key|\.env)$'; then
+            echo "::error::a secret-looking file is tracked by git"
+            exit 1
+          fi
+          echo "no secret-looking files tracked"
+
+  lint:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+      - name: Run shellcheck
+        run: |
+          # Informational: the codebase targets bash 3.2 and avoids several
+          # shellcheck-preferred constructs that would break stock macOS bash.
+          shellcheck -S warning -e SC1090,SC1091,SC2039,SC3043,SC3054,SC3010,SC3014 \
+            $(find bin src scripts -type f -name '*.sh'; echo bin/backupkit) || true

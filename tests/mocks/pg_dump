@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Mock pg_dump / pg_dumpall (selected by the basename used to invoke it).
+#
+#   MOCK_PGDUMP_FAIL=1       exit 1
+#   MOCK_PGDUMP_NOHDR=1      write a file without the PGDMP magic
+#   MOCK_PGDUMP_EMPTY=1      write an empty file
+
+name="$(basename "$0")"
+log="${MOCK_LOG:-/dev/null}"
+printf '%s %s\n' "$name" "$*" >>"$log" 2>/dev/null || true
+
+if [ "${MOCK_PGDUMP_FAIL:-0}" = "1" ]; then
+  printf '%s: error: connection to server failed\n' "$name" >&2
+  exit 1
+fi
+
+out=""
+prev=""
+for a in "$@"; do
+  case "$prev" in
+    --file|-f) out="$a" ;;
+  esac
+  case "$a" in
+    --file=*) out="${a#--file=}" ;;
+    --version) printf '%s (PostgreSQL) 16.2\n' "$name"; exit 0 ;;
+  esac
+  prev="$a"
+done
+
+# Version probe: nothing to write.
+case " $* " in
+  *" --version "*) printf '%s (PostgreSQL) 16.2\n' "$name"; exit 0 ;;
+esac
+
+[ -n "$out" ] || exit 0
+
+if [ "${MOCK_PGDUMP_EMPTY:-0}" = "1" ]; then
+  : >"$out"
+  exit 0
+fi
+
+if [ "$name" = "pg_dumpall" ]; then
+  printf -- '-- globals dump\nCREATE ROLE app LOGIN;\n' >"$out"
+  exit 0
+fi
+
+if [ "${MOCK_PGDUMP_NOHDR:-0}" = "1" ]; then
+  printf 'not-a-pgdmp-archive\n' >"$out"
+  exit 0
+fi
+
+{ printf 'PGDMP'; printf 'archive-payload-%s\n' "$name"; } >"$out"
+exit 0

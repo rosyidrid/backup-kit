@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# age-keygen mock: delegates to the age mock, which implements -o and -y.
+# MOCK_NAME tells the age mock which persona to act as (basename would be
+# "age" after exec).
+MOCK_NAME=age-keygen exec "$(dirname "$0")/age" "$@"

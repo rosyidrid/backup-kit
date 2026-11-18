@@ -1,0 +1,206 @@
+#!/usr/bin/env bash
+# Mock AWS CLI covering only what BackupKit's s3 storage driver uses:
+#
+#   s3 cp <file|-> s3://bucket/key [flags]
+#   s3 cp s3://bucket/key <file|->
+#   s3api head-object --bucket B --key K --query ContentLength --output text
+#   s3api delete-object --bucket B --key K
+#   s3api list-objects-v2 --bucket B --prefix P --query Contents[].Key --output text
+#   s3api head-bucket --bucket B
+#
+# Objects live under $MOCK_AWS_ROOT/<bucket>/<key>.
+#
+# Failure injection:
+#   MOCK_AWS_FAIL_UPLOADS=n   fail the first n uploads (retry test)
+#   MOCK_AWS_TRUNCATE=1       store a file one byte shorter than uploaded
+#   MOCK_AWS_HEAD_FAIL=1      head-object always reports 404
+#   MOCK_AWS_ALWAYS_FAIL=1    fail every operation
+
+log="${MOCK_LOG:-/dev/null}"
+printf 'aws %s\n' "$*" >>"$log" 2>/dev/null || true
+
+for a in "$@"; do
+  case "$a" in
+    --version) printf 'aws-cli/2.15.0 Python/3.11.6 Linux/6.1 exe/x86_64\n'; exit 0 ;;
+  esac
+done
+
+root="${MOCK_AWS_ROOT:-/tmp/mockaws}"
+bucket=""; key=""; prefix=""; query=""; output=""; endpoint=""
+positionals=()
+
+# Flags that take a value and that the mock does not care about.
+uninteresting="--cli-connect-timeout --cli-read-timeout --max-keys --region --profile"
+
+skip=0
+for a in "$@"; do
+  if [ "$skip" = "1" ]; then
+    skip=0
+    continue
+  fi
+  case "$a" in
+    --bucket=*)   bucket="${a#--bucket=}" ;;
+    --key=*)      key="${a#--key=}" ;;
+    --prefix=*)   prefix="${a#--prefix=}" ;;
+    --query=*)    query="${a#--query=}" ;;
+    --output=*)   output="${a#--output=}" ;;
+    --endpoint-url=*) endpoint="${a#--endpoint-url=}" ;;
+    --bucket)     skip=1; bucket="${a#--bucket}" ;;
+    --*)          skip=0 ;;
+    *)            positionals[${#positionals[@]}]="$a" ;;
+  esac
+done
+
+# Second pass: values of flags that take the value as the next argument.
+set -- "$@"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --bucket|--key|--prefix|--query|--output|--endpoint-url)
+      name="$1"; value="${2-}"
+      case "$name" in
+        --bucket) bucket="$value" ;;
+        --key) key="$value" ;;
+        --prefix) prefix="$value" ;;
+        --query) query="$value" ;;
+        --output) output="$value" ;;
+        --endpoint-url) endpoint="$value" ;;
+      esac
+      shift 2 ;;
+    *) shift ;;
+  esac
+done
+
+if [ -n "$endpoint" ]; then
+  printf 'aws-endpoint %s\n' "$endpoint" >>"$log" 2>/dev/null || true
+fi
+
+service="${positionals[0]:-}"
+op="${positionals[1]:-}"
+
+truncate_by_one() {
+  local f="$1" size
+  size="$(wc -c <"$f" | tr -d ' ')"
+  [ "$size" -gt 0 ] || return 0
+  if head -c $((size - 1)) "$f" >"${f}.tmp" 2>/dev/null; then
+    mv -f "${f}.tmp" "$f"
+  fi
+  return 0
+}
+
+should_fail_upload() {
+  [ "${MOCK_AWS_ALWAYS_FAIL:-0}" = "1" ] && return 0
+  if [ -n "${MOCK_AWS_FAIL_UPLOADS:-}" ]; then
+    local counter="${MOCK_COUNTER_DIR:-/tmp}/aws-uploads" count=0
+    [ -f "$counter" ] && count="$(cat "$counter")"
+    printf '%s\n' "$((count + 1))" >"$counter" 2>/dev/null || true
+    if [ "$count" -lt "${MOCK_AWS_FAIL_UPLOADS}" ]; then
+      printf 'upload failed: simulated network error (attempt %s)\n' "$((count + 1))" >&2
+      return 0
+    fi
+  fi
+  return 1
+}
+
+uri_to_path() {
+  printf '%s/%s' "$root" "${1#s3://}"
+}
+
+case "$service/$op" in
+  s3/cp)
+    src="${positionals[2]:-}"
+    dst="${positionals[3]:-}"
+    if [ "$src" = "-" ]; then
+      should_fail_upload && exit 1
+      target="$(uri_to_path "$dst")"
+      mkdir -p "$(dirname "$target")"
+      cat >"$target"
+      [ "${MOCK_AWS_TRUNCATE:-0}" = "1" ] && truncate_by_one "$target"
+      exit 0
+    fi
+    case "$src" in
+      s3://*)
+        if [ "${MOCK_AWS_ALWAYS_FAIL:-0}" = "1" ]; then
+          printf 'download failed: simulated network error\n' >&2
+          exit 1
+        fi
+        source_file="$(uri_to_path "$src")"
+        if [ ! -f "$source_file" ]; then
+          printf 'download failed: The specified key does not exist.\n' >&2
+          exit 254
+        fi
+        if [ "$dst" = "-" ]; then cat "$source_file"; else cat "$source_file" >"$dst"; fi
+        exit 0 ;;
+      *)
+        should_fail_upload && exit 1
+        target="$(uri_to_path "$dst")"
+        if [ ! -f "$src" ]; then
+          printf 'upload failed: cannot open local file\n' >&2
+          exit 1
+        fi
+        mkdir -p "$(dirname "$target")"
+        cp -- "$src" "$target"
+        [ "${MOCK_AWS_TRUNCATE:-0}" = "1" ] && truncate_by_one "$target"
+        exit 0 ;;
+    esac
+    ;;
+  s3api/head-object)
+    if [ "${MOCK_AWS_HEAD_FAIL:-0}" = "1" ] || [ "${MOCK_AWS_ALWAYS_FAIL:-0}" = "1" ]; then
+      printf 'An error occurred (404) when calling the HeadObject operation: Not Found\n' >&2
+      exit 254
+    fi
+    f="$(uri_to_path "s3://${bucket}/${key}")"
+    if [ ! -f "$f" ]; then
+      printf 'An error occurred (404) when calling the HeadObject operation: Not Found\n' >&2
+      exit 254
+    fi
+    size="$(wc -c <"$f" | tr -d ' ')"
+    if [ "$output" = "text" ]; then
+      printf '%s\n' "$size"
+    else
+      printf '{"ContentLength": %s}\n' "$size"
+    fi
+    exit 0
+    ;;
+  s3api/delete-object)
+    if [ "${MOCK_AWS_ALWAYS_FAIL:-0}" = "1" ]; then
+      printf 'delete failed: simulated network error\n' >&2
+      exit 1
+    fi
+    rm -f -- "$(uri_to_path "s3://${bucket}/${key}")"
+    printf '{}\n'
+    exit 0
+    ;;
+  s3api/list-objects-v2)
+    if [ "${MOCK_AWS_ALWAYS_FAIL:-0}" = "1" ]; then
+      printf 'list failed: simulated network error\n' >&2
+      exit 1
+    fi
+    dir="${root}/${bucket}/${prefix}"
+    [ -d "$dir" ] || exit 0
+    out=""
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      rel="${f#"${root}/${bucket}/"}"
+      out="${out}${out:+
+}${rel}"
+    done <<EOF
+$(find "$dir" -type f 2>/dev/null | sort)
+EOF
+    [ -n "$out" ] || exit 0
+    if [ "$output" = "text" ]; then
+      printf '%s\n' "$out" | paste -sd "$(printf '\t')" -
+    else
+      printf '%s\n' "$out"
+    fi
+    exit 0
+    ;;
+  s3api/head-bucket)
+    [ -d "${root}/${bucket}" ] && exit 0
+    printf 'An error occurred (404) when calling the HeadBucket operation\n' >&2
+    exit 254
+    ;;
+  *)
+    printf 'mock aws: unsupported invocation: [%s] [%s]\n' "$service" "$op" >&2
+    exit 2
+    ;;
+esac

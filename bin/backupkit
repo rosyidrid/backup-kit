@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+# BackupKit - entry point.
+#
+# Lightweight, self-hosted database backup automation for VPS infrastructure
+# with S3-compatible object storage.
+#
+# Runs on the VPS it protects; there is no central server, no database, and no
+# daemon. Every command is a plain process so cron, systemd timers, or a human
+# can run it.
+
+set -o pipefail
+umask 077
+
+# ---------------------------------------------------------------------------
+# Locate the installation (works through symlinks such as /usr/local/bin).
+# ---------------------------------------------------------------------------
+BACKUPKIT_SELF="$0"
+while [ -L "$BACKUPKIT_SELF" ]; do
+  BACKUPKIT_LINK="$(readlink "$BACKUPKIT_SELF")"
+  case "$BACKUPKIT_LINK" in
+    /*) BACKUPKIT_SELF="$BACKUPKIT_LINK" ;;
+    *)  BACKUPKIT_SELF="$(dirname "$BACKUPKIT_SELF")/$BACKUPKIT_LINK" ;;
+  esac
+done
+BACKUPKIT_BIN_DIR="$(cd "$(dirname "$BACKUPKIT_SELF")" && pwd)"
+BACKUPKIT_ROOT="$(cd "${BACKUPKIT_BIN_DIR}/.." && pwd)"
+export BACKUPKIT_ROOT
+
+BACKUPKIT_VERSION="$(cat "${BACKUPKIT_ROOT}/VERSION" 2>/dev/null || printf '0.1.0')"
+BACKUPKIT_VERSION="$(printf '%s' "$BACKUPKIT_VERSION" | tr -d '[:space:]')"
+export BACKUPKIT_VERSION
+
+# ---------------------------------------------------------------------------
+# Load modules
+# ---------------------------------------------------------------------------
+BK_SRC="${BACKUPKIT_ROOT}/src"
+
+# shellcheck source=/dev/null
+for f in \
+  "${BK_SRC}/core/common.sh" \
+  "${BK_SRC}/core/log.sh" \
+  "${BK_SRC}/core/config.sh" \
+  "${BK_SRC}/core/state.sh" \
+  "${BK_SRC}/core/lock.sh" \
+  "${BK_SRC}/core/manifest.sh"
+do
+  # shellcheck source=/dev/null
+  . "$f"
+done
+
+# Log destination defaults (overridable from the environment).
+BK_LOG_FILE="${BACKUPKIT_LOG_FILE:-${BK_LOG_DIR}/backupkit.log}"
+BK_RUN_ID="${BK_RUN_ID:-run_$(date -u +%Y%m%dT%H%M%SZ)_$$}"
+export BK_LOG_FILE BK_RUN_ID
+
+for f in \
+  "${BK_SRC}/drivers/mysql.sh" \
+  "${BK_SRC}/drivers/postgres.sh" \
+  "${BK_SRC}/drivers/driver.sh" \
+  "${BK_SRC}/compression/compression.sh" \
+  "${BK_SRC}/encryption/encryption.sh" \
+  "${BK_SRC}/storage/local.sh" \
+  "${BK_SRC}/storage/s3.sh" \
+  "${BK_SRC}/storage/storage.sh" \
+  "${BK_SRC}/validation/validation.sh" \
+  "${BK_SRC}/retention/retention.sh" \
+  "${BK_SRC}/restore/restore.sh" \
+  "${BK_SRC}/notifications/notify.sh" \
+  "${BK_SRC}/commands/init.sh" \
+  "${BK_SRC}/commands/backup.sh" \
+  "${BK_SRC}/commands/list.sh" \
+  "${BK_SRC}/commands/verify.sh" \
+  "${BK_SRC}/commands/restore_cmd.sh" \
+  "${BK_SRC}/commands/cleanup.sh" \
+  "${BK_SRC}/commands/config_cmd.sh" \
+  "${BK_SRC}/commands/doctor.sh" \
+  "${BK_SRC}/commands/scheduler.sh"
+do
+  if [ ! -f "$f" ]; then
+    printf 'backupkit: fatal: missing module %s\n' "$f" >&2
+    exit 3
+  fi
+  # shellcheck source=/dev/null
+  . "$f"
+done
+
+trap 'bk_cleanup_all' EXIT
+
+# ---------------------------------------------------------------------------
+# Usage
+# ---------------------------------------------------------------------------
+bk_usage() {
+  cat <<EOF
+BackupKit ${BACKUPKIT_VERSION} - lightweight, self-hosted database backup automation
+for VPS infrastructure with S3-compatible object storage.
+
+Usage: backupkit <command> [options]
+
+Setup
+  init                    create the config dir, example config and age key
+  config validate         check the configuration and report every problem
+  config show             print the effective config with secrets redacted
+  config path             print config, secrets and key locations
+  doctor                  check dependencies, credentials and reachability
+  install-scheduler       install the cron entries
+  uninstall-scheduler     remove the cron entries
+
+Backup
+  backup --all            back up every enabled database (daily/weekly/monthly
+                          are decided from each database's schedule)
+  backup --database ID    back up one database
+  backup --type daily     force a type (still respects its schedule and date)
+  backup --dry-run        show what would happen
+
+Inspect
+  list [--remote]         list stored backups
+  status                  per-database state, retention and lock status
+  verify --id ID [--deep] verify checksums, decrypt and decompress the artifacts
+
+Restore
+  restore --id ID --target DB [--dry-run] [--yes]
+  restore --id ID --globals [--yes]
+
+Maintenance
+  cleanup [--dry-run]     apply the retention policy
+
+Global options
+  -h, --help              this help
+  --version               print the version
+
+Environment overrides (mainly for tests and non-root installs)
+  BACKUPKIT_ETC, BACKUPKIT_STATE_DIR, BACKUPKIT_LOG_DIR, BACKUPKIT_CONFIG,
+  BACKUPKIT_SECRETS, BACKUPKIT_IDENTITY, BACKUPKIT_LOG_FILE, BK_LOG_LEVEL
+
+Documentation: ${BACKUPKIT_ROOT}/docs/ and ${BACKUPKIT_ROOT}/README.md
+EOF
+}
+
+# ---------------------------------------------------------------------------
+# Dispatch
+# ---------------------------------------------------------------------------
+cmd="${1-help}"
+[ "$#" -gt 0 ] && shift
+
+case "$cmd" in
+  init)                  bk_cmd_init "$@" ;;
+  backup)                bk_cmd_backup "$@" ;;
+  list)                  bk_cmd_list "$@" ;;
+  status)                bk_cmd_status "$@" ;;
+  verify)                bk_cmd_verify "$@" ;;
+  restore)               bk_cmd_restore "$@" ;;
+  cleanup)               bk_cmd_cleanup "$@" ;;
+  config)                bk_cmd_config "$@" ;;
+  doctor)                bk_cmd_doctor "$@" ;;
+  install-scheduler)     bk_cmd_install_scheduler "$@" ;;
+  uninstall-scheduler)   bk_cmd_uninstall_scheduler "$@" ;;
+  version|--version|-V)  printf 'backupkit %s\n' "$BACKUPKIT_VERSION" ;;
+  help|--help|-h|'')     bk_usage ;;
+  *)                     printf 'backupkit: error: unknown command: %s\n\n' "$cmd" >&2; bk_usage >&2; exit "$BK_EXIT_GENERAL" ;;
+esac

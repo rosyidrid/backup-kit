@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Mock pg_dumpall: writes a globals-only style SQL file.
+#
+#   MOCK_PGDUMP_FAIL=1  exit 1
+#   MOCK_PGDUMP_EMPTY=1 write an empty file
+
+log="${MOCK_LOG:-/dev/null}"
+printf 'pg_dumpall %s\n' "$*" >>"$log" 2>/dev/null || true
+
+for a in "$@"; do
+  case "$a" in
+    --version) printf 'pg_dumpall (PostgreSQL) 16.2\n'; exit 0 ;;
+  esac
+done
+
+if [ "${MOCK_PGDUMP_FAIL:-0}" = "1" ]; then
+  printf 'pg_dumpall: error: connection to server failed\n' >&2
+  exit 1
+fi
+
+out=""
+prev=""
+for a in "$@"; do
+  [ "$prev" = "--file" ] && out="$a"
+  case "$a" in --file=*) out="${a#--file=}" ;; esac
+  prev="$a"
+done
+[ -n "$out" ] || exit 0
+
+if [ "${MOCK_PGDUMP_EMPTY:-0}" = "1" ]; then
+  : >"$out"
+  exit 0
+fi
+
+printf -- '-- globals dump (roles)\nCREATE ROLE app LOGIN;\n' >"$out"
+exit 0

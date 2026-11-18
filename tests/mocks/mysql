@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Mock mysql client.
+#
+#   -N -B -e 'SELECT VERSION()'  -> version string
+#   -N -B -e 'SELECT 1'          -> 1
+#   db < file                    -> restore, records the payload size
+#
+#   MOCK_MYSQL_FAIL=1            fail every invocation
+
+log="${MOCK_LOG:-/dev/null}"
+printf 'mysql %s\n' "$*" >>"$log" 2>/dev/null || true
+
+if [ "${MOCK_MYSQL_FAIL:-0}" = "1" ]; then
+  printf 'mysql: error: restore failed\n' >&2
+  exit 1
+fi
+
+query=""
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "-e" ]; then query="$a"; fi
+  prev="$a"
+done
+
+case "$query" in
+  *VERSION*)
+    printf '8.0.36\n'
+    exit 0 ;;
+  'SELECT 1')
+    printf '1\n'
+    exit 0 ;;
+  '')
+    # Restore mode: the payload arrives on stdin.
+    bytes=$(wc -c | tr -d ' ')
+    printf 'mysql-restore-bytes %s\n' "$bytes" >>"$log" 2>/dev/null || true
+    exit 0 ;;
+  *)
+    exit 0 ;;
+esac

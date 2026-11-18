@@ -1,0 +1,49 @@
+# BackupKit — files that must never be committed
+#
+# Configuration and credentials ------------------------------------------------
+config.json
+secrets.json
+*.secrets.json
+age.key
+age.key.pub
+identity.txt
+*.age.key
+.env
+.env.*
+!.env.example
+
+# Local state, logs and backups -----------------------------------------------
+state/
+manifests/
+history.jsonl
+locks/
+*.log
+*.jsonl
+*.sql
+*.dump
+*.zst
+*.zst.age
+*.gz
+*.gz.age
+*.sha256
+
+# Editor and OS ---------------------------------------------------------------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
+
+# Build and test artefacts ----------------------------------------------------
+tmp/
+.tmp/
+coverage/
+tests/**/tmp/
+/private/
+shellcheck-report.txt
+
+# Working notes that must not be published (may contain internal names) --------
+INIT.md
+NOTES.md
+TODO.local.md

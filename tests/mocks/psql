@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Mock psql: answers version and connectivity probes, records restores.
+#
+#   -tAc 'SHOW server_version' -> 16.2
+#   -tAc 'SELECT 1'            -> 1
+#   -f <globals file>          -> globals restore
+
+log="${MOCK_LOG:-/dev/null}"
+printf 'psql %s\n' "$*" >>"$log" 2>/dev/null || true
+
+if [ "${MOCK_PSQL_FAIL:-0}" = "1" ]; then
+  printf 'psql: error: could not connect\n' >&2
+  exit 1
+fi
+
+case " $* " in
+  *" SHOW server_version "*) printf '16.2\n'; exit 0 ;;
+  *" SELECT 1 "*) printf '1\n'; exit 0 ;;
+esac
+
+case " $* " in
+  *" -f "*)
+    bytes=0
+    for a in "$@"; do
+      [ -f "$a" ] && bytes=$(wc -c <"$a" | tr -d ' ')
+    done
+    printf 'psql-globals-restore-bytes %s\n' "$bytes" >>"$log" 2>/dev/null || true
+    ;;
+esac
+exit 0

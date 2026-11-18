@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# Mock age / age-keygen.
+#
+# The mock is NOT encryption: it base64-encodes with a marker. It exists so the
+# pipeline (encrypt -> upload -> download -> decrypt) can be exercised without
+# a real key. Real deployments use the real age binary.
+
+name="${MOCK_NAME:-$(basename "$0")}"
+log="${MOCK_LOG:-/dev/null}"
+printf '%s %s\n' "$name" "$*" >>"$log" 2>/dev/null || true
+enc() { printf 'AGEENC:'; openssl base64 -A; }
+dec() { sed -e 's/^AGEENC://' | openssl base64 -d -A; }
+
+if [ "$name" = "age-keygen" ]; then
+  out=""
+  prev=""
+  for a in "$@"; do
+    case "$prev" in
+      -o) out="$a" ;;
+    esac
+    case "$a" in
+      -o=*) out="${a#-o=}" ;;
+      -y)   grep '^# public key:' "${2:-/dev/null}" | awk '{print $4}'; exit 0 ;;
+    esac
+    prev="$a"
+  done
+  [ -n "$out" ] || { printf 'age-keygen: -o required\n' >&2; exit 2; }
+  cat >"$out" <<'EOF'
+# created: 2026-01-01T00:00:00Z
+# public key: age1testrecipient0000000000000000000000000000000000000000000000000000
+AGE-SECRET-KEY-1TESTTESTTESTTESTTESTTESTTESTTESTTESTTESTTESTTESTTESTTESTTESTTEST
+EOF
+  printf 'age1testrecipient0000000000000000000000000000000000000000000000000000\n' >&2
+  exit 0
+fi
+
+# Parse -o <file>, -r <key>, -R <file>, -i <file>, -d
+out=""; decrypt=0
+prev=""
+for a in "$@"; do
+  case "$prev" in
+    -o) out="$a" ;;
+    -i) [ -f "$a" ] || { printf 'age: failed to read identity\n' >&2; exit 1; } ;;
+  esac
+  case "$a" in
+    -o=*) out="${a#-o=}" ;;
+    -d) decrypt=1 ;;
+  esac
+  prev="$a"
+done
+
+[ -n "$out" ] || { printf 'age: -o required\n' >&2; exit 2; }
+
+if [ "${MOCK_AGE_FAIL:-0}" = "1" ]; then
+  printf 'age: error: encryption failed\n' >&2
+  exit 1
+fi
+
+tmp_in=""
+for a in "$@"; do
+  case "$a" in
+    -*) ;;
+    *=*) ;;
+    *) tmp_in="$a" ;;
+  esac
+done
+
+if [ "$decrypt" = "1" ]; then
+  dec <"$tmp_in" >"$out" || exit 1
+else
+  enc <"$tmp_in" >"$out" || exit 1
+fi
+exit 0
