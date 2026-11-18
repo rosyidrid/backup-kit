@@ -20,7 +20,7 @@ test_backup_happy_path_records_verified_manifest() {
 
   key="$(printf '%s' "$manifest" | jq -r '.artifacts[0].key')"
   expected="$(printf '%s' "$manifest" | jq -r '.artifacts[0].sha256')"
-  actual="$(shasum -a 256 "${MOCK_STORE_DIR}/${key}" | awk '{print $1}')"
+  actual="$(fixture_sha256 "${MOCK_STORE_DIR}/${key}")"
   assert_eq "$expected" "$actual" "sha256 in the manifest matches the stored object"
 
   assert_contains "$(history_dump)" '"status":"success"' "history records success"

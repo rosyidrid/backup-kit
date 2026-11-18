@@ -361,7 +361,7 @@ mk_manifest() {
     --arg created "$created" \
     --arg status "$status" \
     --arg key "$artifact_key" \
-    --arg sha "$(printf 'fake-artifact-%s\n' "$id" | shasum -a 256 | awk '{print $1}')" \
+    --arg sha "$(printf 'fake-artifact-%s\n' "$id" | fixture_sha256_stdin)" \
     --argjson size "$(wc -c <"$art_path" | tr -d ' ')" \
     '{schema_version:$schema_version,id:$id,status:$status,
       database:{id:$db_id,type:"mysql",name:"appdb"},
@@ -395,6 +395,23 @@ count_manifests() {
     find "${MOCK_STORE_DIR}/backups/${db}/${type}" -name '*.manifest.json' 2>/dev/null | wc -l | tr -d ' '
   else
     find "${MOCK_STORE_DIR}/backups/${db}" -name '*.manifest.json' 2>/dev/null | wc -l | tr -d ' '
+  fi
+}
+
+fixture_sha256() {
+  # Portable digest for fixtures: sha256sum (Linux) or shasum (macOS/perl).
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
+
+fixture_sha256_stdin() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | awk '{print $1}'
+  else
+    shasum -a 256 | awk '{print $1}'
   fi
 }
 
